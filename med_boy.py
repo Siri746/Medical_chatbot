@@ -1,8 +1,3 @@
-#!/usr/bin/env python
-# coding: utf-8
-
-# In[ ]:
-
 import streamlit as st
 import pandas as pd
 import google.generativeai as genai
@@ -12,30 +7,23 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 
 st.set_page_config(page_title="Medical Chatbot 🩺", page_icon="🩺", layout="centered")
 
+# Use Environment Variables for security
+API_KEY = os.getenv("GOOGLE_API_KEY")
+
 if "conversation" not in st.session_state:
     st.session_state.conversation = []
 
+@st.cache_data # Cache data so it doesn't reload on every click
 def load_knowledge_base(file_path):
-    try:
-        if not os.path.exists(file_path):
-            st.error(f"File not found: {file_path}")
-            return None
-        df = pd.read_csv(file_path)
-        if df.empty:
-            st.error(f"The file {file_path} is empty.")
-            return None
-        return df
-    except Exception as e:
-        st.error(f"Error loading the knowledge base: {e}")
+    if not os.path.exists(file_path):
         return None
-
-def preprocess_data(df):
+    df = pd.read_csv(file_path)
     df = df.fillna("")
     df['short_question'] = df['short_question'].str.lower()
-    df['short_answer'] = df['short_answer'].str.lower()
     return df
 
-def create_vectorizer(df):
+@st.cache_resource # Cache the vectorizer
+def get_vectors(df):
     vectorizer = TfidfVectorizer()
     question_vectors = vectorizer.fit_transform(df['short_question'])
     return vectorizer, question_vectors
@@ -44,83 +32,53 @@ def find_closest_question(user_query, vectorizer, question_vectors, df):
     query_vector = vectorizer.transform([user_query.lower()])
     similarities = cosine_similarity(query_vector, question_vectors).flatten()
     best_match_index = similarities.argmax()
-    best_match_score = similarities[best_match_index]
-    if best_match_score > 0.3:
+    if similarities[best_match_index] > 0.3:
         return df.iloc[best_match_index]['short_answer']
-    else:
-        return None
-
-def configure_generative_model(api_key):
-    try:
-        genai.configure(api_key=api_key)
-        return genai.GenerativeModel('gemini-1.5-flash')
-    except Exception as e:
-        st.error(f"Error configuring the generative model: {e}")
-        return None
-
-def refine_answer_with_gemini(generative_model, user_query, closest_answer):
-    try:
-        context = """
-        You are a medical chatbot. Refine the following answer to make it more professional, clear, and actionable.
-        Ensure the response is detailed, well-structured, and includes bullet points for clarity.
-        """
-        prompt = f"{context}\n\nUser Query: {user_query}\nClosest Answer: {closest_answer}\nRefined Answer:"
-        response = generative_model.generate_content(prompt)
-        return response.text
-    except Exception as e:
-        return f"Error refining the answer: {e}"
-
-def medical_chatbot(df, vectorizer, question_vectors, generative_model):
-    st.title("Medical Chatbot 🩺")
-    st.write("Welcome to the Medical Chatbot! Ask me anything about medical topics.")
-
-    st.markdown("### Conversation History")
-    for message in st.session_state.conversation:
-        if message["role"] == "User":
-            st.markdown(f"<div style='background-color: #e6f7ff; padding: 10px; border-radius: 10px; margin: 5px 0;'><strong>You:</strong> {message['content']}</div>", unsafe_allow_html=True)
-        else:
-            st.markdown(f"<div style='background-color: #f0f0f0; padding: 10px; border-radius: 10px; margin: 5px 0;'><strong>Bot:</strong> {message['content']}</div>", unsafe_allow_html=True)
-
-    user_query = st.text_input("User:", placeholder="Type your question here...", key="user_input")
-
-    if user_query:
-        st.session_state.conversation.append({"role": "You", "content": user_query})
-        closest_answer = find_closest_question(user_query, vectorizer, question_vectors, df)
-
-        if closest_answer:
-            with st.spinner("Refining the answer..."):
-                refined_answer = refine_answer_with_gemini(generative_model, user_query, closest_answer)
-                st.session_state.conversation.append({"role": "Bot", "content": refined_answer})
-                st.markdown(f"<div style='background-color: #f0f0f0; padding: 10px; border-radius: 10px; margin: 5px 0;'><strong>Bot (refined answer):</strong> {refined_answer}</div>", unsafe_allow_html=True)
-        else:
-            try:
-                context = """
-                You are a medical chatbot. Provide accurate, detailed, and well-structured answers to medical questions.
-                If the user describes symptoms, suggest possible causes and recommend consulting a doctor for a proper diagnosis.
-                Use a professional tone and format the response clearly with bullet points.
-                """
-                prompt = f"{context}\n\nUser: {user_query}\nBot:"
-                response = generative_model.generate_content(prompt)
-                st.session_state.conversation.append({"role": "Bot", "content": response.text})
-                st.markdown(f"<div style='background-color: #f0f0f0; padding: 10px; border-radius: 10px; margin: 5px 0;'><strong>Bot (AI-generated):</strong> {response.text}</div>", unsafe_allow_html=True)
-            except Exception as e:
-                st.error(f"Sorry, I couldn't generate a response. Error: {e}")
+    return None
 
 def main():
-    file_path = "med_bot_data.csv"
-    df = load_knowledge_base(file_path)
-    if df is None:
-        return
-    df = preprocess_data(df)
-    vectorizer, question_vectors = create_vectorizer(df)
-    API_KEY = "AIzaSyA-9-lTQTWdNM43YdOXMQwGKDy0SrMwo6c"
+    st.title("Medical Chatbot 🩺")
+    
     if not API_KEY:
-        st.error("API key not found. Please set the GOOGLE_API_KEY environment variable.")
-        return
-    generative_model = configure_generative_model(API_KEY)
-    if generative_model is None:
-        return
-    medical_chatbot(df, vectorizer, question_vectors, generative_model)
+        st.error("Please set the GOOGLE_API_KEY in your Environment Variables.")
+        st.stop()
+
+    genai.configure(api_key=API_KEY)
+    model = genai.GenerativeModel('gemini-1.5-flash')
+
+    df = load_knowledge_base("med_bot_data.csv")
+    if df is not None:
+        vectorizer, question_vectors = get_vectors(df)
+
+    # Display Chat History
+    for chat in st.session_state.conversation:
+        with st.chat_message(chat["role"]):
+            st.markdown(chat["content"])
+
+    # Chat Input
+    if prompt := st.chat_input("How can I help you today?"):
+        st.session_state.conversation.append({"role": "user", "content": prompt})
+        with st.chat_message("user"):
+            st.markdown(prompt)
+
+        with st.chat_message("assistant"):
+            response_placeholder = st.empty()
+            
+            # Logic: Check CSV first, then Gemini
+            closest_answer = find_closest_question(prompt, vectorizer, question_vectors, df) if df is not None else None
+            
+            if closest_answer:
+                full_prompt = f"Refine this medical answer for clarity: {closest_answer}"
+            else:
+                full_prompt = f"System: You are a professional medical assistant. User Question: {prompt}"
+
+            try:
+                response = model.generate_content(full_prompt)
+                assistant_response = response.text
+                response_placeholder.markdown(assistant_response)
+                st.session_state.conversation.append({"role": "assistant", "content": assistant_response})
+            except Exception as e:
+                st.error("Model Error: Check your API Key or Quota.")
 
 if __name__ == "__main__":
     main()
